@@ -25,7 +25,10 @@ use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadP
 use capture::enumerate_capturable_windows;
 use display_info::enumerate_displays;
 use std::io::Write;
+use std::net::UdpSocket;
 use std::sync::mpsc::channel;
+use std::time::Duration;
+use byteorder::{LittleEndian, WriteBytesExt};
 use window_info::WindowInfo;
 
 fn create_capture_item_for_window(window_handle: HWND) -> Result<GraphicsCaptureItem> {
@@ -152,12 +155,30 @@ fn take_screenshot(item: &GraphicsCaptureItem) -> Result<()> {
 
         let bytes_per_pixel = 4;
         let mut bits = vec![0u8; (desc.Width * desc.Height * bytes_per_pixel) as usize];
+        let socket = UdpSocket::bind(&"0.0.0.0:4000").unwrap();
+        let mut buffer = vec![0u8; 1200];
         for row in 0..desc.Height {
+            let width = desc.Width.min(1024/4) as usize;
+
             let data_begin = (row * (desc.Width * bytes_per_pixel)) as usize;
-            let data_end = ((row + 1) * (desc.Width * bytes_per_pixel)) as usize;
+            let data_end = (row * (desc.Width * bytes_per_pixel)) as usize;
             let slice_begin = (row * mapped.RowPitch) as usize;
-            let slice_end = slice_begin + (desc.Width * bytes_per_pixel) as usize;
-            bits[data_begin..data_end].copy_from_slice(&slice[slice_begin..slice_end]);
+
+            let slice_end = slice_begin + ((width as u32) * bytes_per_pixel) as usize;
+            (&mut buffer[0..2]).write_u16::<LittleEndian>(0xaa55).unwrap();
+            (&mut buffer[2..4]).write_u16::<LittleEndian>(0).unwrap();
+            (&mut buffer[4..6]).write_u16::<LittleEndian>(row as u16).unwrap();
+            (&mut buffer[6..8]).write_u16::<LittleEndian>(width as u16).unwrap();
+            (&mut buffer[8..10]).write_u16::<LittleEndian>(1).unwrap();
+            for i in 0..width {
+                buffer[16 + i * 3 + 0] = slice[slice_begin + i * 4 + 0];
+                buffer[16 + i * 3 + 1] = slice[slice_begin + i * 4 + 1];
+                buffer[16 + i * 3 + 2] = slice[slice_begin + i * 4 + 2];
+            }
+            //buffer[16..(width*2)+16].copy_from_slice(&slice[slice_begin..(slice_begin + width*2)]);
+            socket.send_to(&buffer[..16+width*3], "192.168.2.114:4000").ok();
+            std::thread::sleep(Duration::from_millis(10));
+            //bits[data_begin..data_end].copy_from_slice(&slice[slice_begin..slice_end]);
         }
 
         d3d_context.Unmap(Some(&resource), 0);
